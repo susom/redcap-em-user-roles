@@ -4,6 +4,7 @@ namespace Stanford\UserRoles;
 require_once "emLoggerTrait.php";
 
 use REDCap;
+use UserRights;
 
 class UserRoles extends \ExternalModules\AbstractExternalModule {
 
@@ -17,15 +18,8 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
 
     function redcap_user_rights($project_id)
     {
-
         $msgAlign 	= "center";
         $msgId 		= "actionMsg";
-
-        // Make we have a valid user
-        $user = USERID;
-        if (empty($user)) {
-            return;
-        }
 
         // Find the UserRole template project where the roles are stored
         $template_project_id = $this->getSystemSetting('template-project');
@@ -34,44 +28,44 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
             return;
         }
 
-
         // WARN THAT USERS ARE NOT ASSIGNED TO ROLES IF MORE THAN 3 USERS UNASSIGNED
-        $project_users = \REDCap::getUserRights();
+        $project_users = REDCap::getUserRights();
         $assigned_users = array_filter($project_users, function($usr){
             return $usr["role_id"];
         });
 
+        // Changing timeVisible from 2000 seconds to 10 seconds
         if(count($project_users) - count($assigned_users) >= 3){
             displayMsg("We recommend that users be assigned to roles. It is good security practice<br> to limit access of essential functionality to the users' defined role."
-                , $msgId, $msgAlign, "yellow", "exclamation.png", 2000);
+                , $msgId, $msgAlign, "yellow", "exclamation.png", 10);
         }
 
         // Get User Roles from this project.
         //  If any roles are already created, we won't create the templated roles.
-        $roles = \UserRights::getRoles($project_id);
+        $roles = UserRights::getRoles($project_id);
         if(count($roles) == 0 && $template_project_id){
             $this->applyTemplateRoles($template_project_id, $project_id);
-            redirect($_SERVER['REQUEST_URI']. "&rolesApplied=1");
+            $url = $_SERVER['REQUEST_URI']. "&rolesApplied=1";
+            echo "<script type=\"text/javascript\">window.location.href=\"$url\";</script>";
         }
 
         if(isset($_REQUEST["rolesApplied"])){
             displayMsg("Template roles have been added to your project."
-                ,$msgId, $msgAlign, "green", "tick.png", 2000);
+                ,$msgId, $msgAlign, "green", "tick.png", 10);
         }
 
         // Add the API Script user with create an API token
-        if(isset($_REQUEST["add_api_user"]) && defined('SUPER_USER') && SUPER_USER){
+        if(isset($_REQUEST["add_api_user"]) && $this->getUser()->isSuperUser()){
             $this->addApiScript($project_id);
             return;
         }
 
-        if(isset($_REQUEST["api_script_added"]) && defined('SUPER_USER') && SUPER_USER){
+        if(isset($_REQUEST["api_script_added"]) &&  $this->getUser()->isSuperUser()){
             displayMsg("API Script User added."
-                ,$msgId, $msgAlign, "green", "tick.png", 2000);
+                ,$msgId, $msgAlign, "green", "tick.png", 10);
         }
 
         ?>
-
         <script>
             $(document).ready(function(){
                 fixUserRights();
@@ -96,7 +90,9 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
                         });
                     }
                 });
+
             });
+
 
             //UNHIDE ASSIGN TO ROLE BUTTON FOR UNASSIGNED USERS
             function callOutAddRoles(){
@@ -118,6 +114,7 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
                         $(this).find("td:eq(0)").empty().append(tooltip);
                     }
                 });
+
                 return;
             }
 
@@ -131,7 +128,7 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
                 $("#addUsersRolesDiv").append(tempbox);
 
                 <?php
-                if ( defined('SUPER_USER') && SUPER_USER  && !array_key_exists("api_script", $project_users) ) {
+                if ( $this->getUser()->isSuperUser()  && !array_key_exists("api_script", $project_users) ) {
                 ?>
                     var newbutton = $("<a href='<?php echo $_SERVER['REQUEST_URI'] . '&api_script_added=1' ?>' class='button apiadd'>Add api_script user to this project</a>");
                     $("#addUsersRolesDiv").append(newbutton);
@@ -193,31 +190,31 @@ class UserRoles extends \ExternalModules\AbstractExternalModule {
             }
         </style>
         <?php
-
     }
 
     private function applyTemplateRoles($source, $destination){
         $template_project_id 	= $source;
         $project_id 			= $destination;
-        db_query("CREATE TEMPORARY TABLE template_roles AS SELECT * FROM redcap_user_roles WHERE project_id = $template_project_id;");
-        db_query("UPDATE template_roles SET project_id = $project_id;");
-        db_query("ALTER TABLE template_roles CHANGE COLUMN role_id role_id INT(10) NULL;");
-        db_query("UPDATE template_roles SET role_id = NULL;");
-        db_query("INSERT INTO redcap_user_roles SELECT * FROM template_roles;");
-        db_query("DROP TEMPORARY TABLE template_roles;");
+
+        $this->query("CREATE TEMPORARY TABLE template_roles AS SELECT * FROM redcap_user_roles WHERE project_id = ?", [$template_project_id]);
+        $this->query("UPDATE template_roles SET project_id = ?", [$project_id]);
+        $this->query("ALTER TABLE template_roles CHANGE COLUMN role_id role_id INT(10) NULL;", []);
+        $this->query("UPDATE template_roles SET role_id = NULL", []);
+        $this->query("INSERT INTO redcap_user_roles SELECT * FROM template_roles;", []);
+        $this->query("DROP TEMPORARY TABLE template_roles", []);
+
         return;
     }
 
     private function addApiScript($project_id){
         $username 	= 'api_script';
         $tok 		= substr( strtoupper(hash('sha256', "$username&" . microtime()) ), 0, 32 );
-        $sql 		= "INSERT INTO
+        $record = $this->query("INSERT INTO
 					redcap_user_rights (project_id, username, data_export_tool, data_import_tool, api_export, api_import, record_create, api_token)
 		 			VALUES
-		 			($project_id, '$username', 1,1,1,1,1, '$tok')";
-        $record 	= db_query($sql);
+		 			(?, ?, 1,1,1,1,1,?)", [$project_id, $username, $tok]);
 
-        REDCap::logEvent("Added api_script user", "$username created api_script user with api token",$sql, $record);
+        REDCap::logEvent("Added api_script user", "$username created api_script user with api token", $record);
         return;
     }
 
