@@ -5,7 +5,7 @@ require_once "emLoggerTrait.php";
 
 use REDCap;
 use UserRights;
-
+Another test
 class UserRoles extends \ExternalModules\AbstractExternalModule {
 
     use emLoggerTrait;
